@@ -1,12 +1,7 @@
-import pickle
-from pathlib import Path
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
-from datetime import date
 
 # ICP:
 # 1/ any_error_flag == True, jeżeli: kraniektomia albo procent artefaktów w slicie > 80% albo średnie ICP w slicie < 0 albo procent wartości nieprawidłowych (-99999) w slicie > 10%
@@ -26,7 +21,6 @@ from datetime import date
 # 1/ time_start nan, fs == 0, signal pusty (pusta tablica), jeżeli: slice zawiera tylko artefakty (klasa 5) albo slice jest za krótki, żeby policzyć PSI
 #
 # Dodatkowo: jeśli kiedykolwiek fs == 0: pomija się slice
-
 
 def get_full_data(slices):
     # max_time = 7 * 24 * 60 * 60
@@ -50,7 +44,6 @@ def get_full_data(slices):
     valid_signal = np.asarray(valid_signal)
     return valid_t, valid_signal
 
-
 def binary_search_nearest(sorted_list, target):
     left, right = 0, len(sorted_list) - 1
 
@@ -73,7 +66,6 @@ def binary_search_nearest(sorted_list, target):
         else:
             return (sorted_list[right], right)
 
-
 def find_nearest_values(times, min_times, params):
     min_times_array = np.array(min_times)
 
@@ -93,7 +85,6 @@ def find_nearest_values(times, min_times, params):
 
     return nearest_time_values, nearest_time_values_params
 
-
 def introduce_data_gaps(times, params):
     for i in range(len(times)):
         for j in range(1, len(times[i])):
@@ -109,7 +100,6 @@ def introduce_data_gaps(times, params):
 
     return times, params
 
-
 def plot_params(times, params, x_axis_seconds_to_hours=False):
     fig, axes = plt.subplots(6, 1, sharex=True)
     titles = ['ICP', 'ABP', 'AMP', 'HR', 'PRx', 'PSI']
@@ -122,7 +112,6 @@ def plot_params(times, params, x_axis_seconds_to_hours=False):
         axes[i].set_title(titles[i])
 
     return (fig, axes)
-
 
 def sample_window(times, params, size_hours, threshold_pct):
     size_seconds = int(size_hours * 60 * 60)
@@ -177,7 +166,6 @@ def sample_window(times, params, size_hours, threshold_pct):
         n += 1
 
     return (param_avgs, param_avgs_window_indexes)
-
 
 def sample_window_return_fill_value(times, params, size_hours, threshold_pct):
     size_seconds = int(size_hours * 60 * 60)
@@ -239,7 +227,6 @@ def sample_window_return_fill_value(times, params, size_hours, threshold_pct):
 
     return (param_avgs, param_avgs_window_indexes, fill_values)
 
-
 def append_histogram_lists(icp, abp, amp, hr, prx, psi, params):
     histogram_lists = [icp, abp, amp, hr, prx, psi]
     for id, list in enumerate(params):
@@ -248,163 +235,7 @@ def append_histogram_lists(icp, abp, amp, hr, prx, psi, params):
         histogram_lists[id] = histogram_lists[id] + list
     return histogram_lists[0], histogram_lists[1], histogram_lists[2], histogram_lists[3], histogram_lists[4], histogram_lists[5]
 
-
-# Parametry służące włączanie funkcji analitycznych skryptu
-PCT_FILL_ANALYSIS = False
-DRAW_PARAMETERS_HISTOGRAMS = False # okno 24h / 8h do zmiany niżej
-PARAMETER_VALUES_TO_EXCEL = False
-PLOT_GRAPHS = False
-
-if PCT_FILL_ANALYSIS:
-    pct_fill_df = pd.DataFrame(columns=['id', '8h', '24h'])
-
-if PARAMETER_VALUES_TO_EXCEL:
-    icp = []
-    abp = []
-    amp = []
-    hr = []
-    prx = []
-    psi = []
-
-
-exclude_df = pd.read_csv('exclusions_final_v2.csv')
-troublemakers = []
-
-with tqdm(total=len(os.listdir(rf'{os.getcwd()}\data\MeanICP')), desc="Processing", unit="file") as pbar:
-    for filename in os.listdir(rf'{os.getcwd()}\data\MeanICP'):
-        id = filename[:filename.find("_")]
-        if id.lower() not in [exclude_id.lower() for exclude_id in exclude_df['Patient'].tolist()]:
-            files = [f'MeanICP\{filename}', f'MeanABP\{id}_meanABP.pkl', f'AMPpp\{id}_AMPpp.pkl',
-                     f'HR\{id}_HR.pkl', f'PRx\{id}_PRx.pkl', f'PSI\{id}_PSI.pkl']
-            times = []
-            params = []
-            for file in files:
-                p = Path(f'{os.getcwd()}\data\{file}')
-                with open(p, 'rb') as f:
-                    data = pickle.load(f)
-                try:
-                    t_param, param = get_full_data(data)
-                    times.append(t_param)
-                    params.append(param)
-                except Exception as e:
-                    print(e)
-
-            try:
-                # Wyznaczanie takiego rejestru czasu, który ma minimum wpisów (stanowi ogranicznik dla pozostałych)
-                for i in range(len(times)):
-                    if i == 0:
-                        min_times_length = len(times[i])
-                        min_times_index = i
-                    elif min_times_length > len(times[i]):
-                        min_times_length = len(times[i])
-                        min_times_index = i
-
-                min_times = times.pop(min_times_index)
-                min_times_param = params.pop(min_times_index)
-
-                synced_times, synced_params = find_nearest_values(times, min_times, params)
-                synced_times.insert(min_times_index, min_times)
-                synced_params.insert(min_times_index, min_times_param)
-                times.insert(min_times_index, min_times)
-                params.insert(min_times_index, min_times_param)
-
-                window_params_8h, window_indexes_8h, window_fill_pct_8h = sample_window_return_fill_value(
-                    synced_times, synced_params, 8, 50)
-                window_params_24h, window_indexes_24h, window_fill_pct_24h = sample_window_return_fill_value(
-                    synced_times, synced_params, 24, 50)
-
-
-                if PARAMETER_VALUES_TO_EXCEL:
-                    # order: [icp, abp, amp, hr, prx, psi]
-                    patient_data_8h = {'ICP': window_params_8h[0],
-                                    'ABP': window_params_8h[1],
-                                    'AMP': window_params_8h[2],
-                                    'HR': window_params_8h[3],
-                                    'PRx': window_params_8h[4],
-                                    'PSI': window_params_8h[5]}
-                    
-                    patient_data_24h = {'ICP': window_params_24h[0],
-                                    'ABP': window_params_24h[1],
-                                    'AMP': window_params_24h[2],
-                                    'HR': window_params_24h[3],
-                                    'PRx': window_params_24h[4],
-                                    'PSI': window_params_24h[5]}
-
-                    patient_df_8h = pd.DataFrame(patient_data_8h)
-                    patient_df_24h = pd.DataFrame(patient_data_24h)
-
-                    try:
-                        with pd.ExcelWriter('parameters_values_8h.xlsx', mode='a') as writer:
-                            patient_df_8h.to_excel(writer, sheet_name=f'{id}')
-                    except:
-                        with pd.ExcelWriter('parameters_values_8h.xlsx', mode='w') as writer:
-                            patient_df_8h.to_excel(writer, sheet_name=f'{id}')
-
-                    try:
-                        with pd.ExcelWriter('parameters_values_24h.xlsx', mode='a') as writer:
-                            patient_df_8h.to_excel(writer, sheet_name=f'{id}')
-                    except:
-                        with pd.ExcelWriter('parameters_values_24h.xlsx', mode='w') as writer:
-                            patient_df_8h.to_excel(writer, sheet_name=f'{id}')
-
-                if PLOT_GRAPHS:
-                    today_date = str(date.today())
-                    output_directory = os.path.join(os.getcwd(), 'outputs', 'plots', today_date)
-                    os.makedirs(output_directory, exist_ok=True)
-
-                    window_indexes_8h, window_params_8h = introduce_data_gaps(window_indexes_8h, window_params_8h)
-                    window_indexes_24h, window_params_24h = introduce_data_gaps(window_indexes_24h, window_params_24h)
-
-                    windowed_plot_8h = plot_params(window_indexes_8h, window_params_8h)[1]
-                    plt.savefig(os.path.join(output_directory, f'{id}_8H_50%.png'))
-                    plt.close()
-                    
-                    windowed_plot_24h = plot_params(window_indexes_24h, window_params_24h)[1]
-                    plt.savefig(os.path.join(output_directory, f'{id}_24H_50%.png'))
-                    plt.close()
-
-                if PCT_FILL_ANALYSIS:
-                    pct_fill_df.loc[len(pct_fill_df)] = [id, window_fill_pct_8h, window_fill_pct_24h]
-                
-                if DRAW_PARAMETERS_HISTOGRAMS:
-                    icp, abp, amp, hr, prx, psi = append_histogram_lists(icp, abp, amp, hr, prx, psi, window_params_8h)
-                    # icp, abp, amp, hr, prx, psi = append_histogram_lists(icp, abp, amp, hr, prx, psi, window_params_24h)
-
-            except Exception as e:
-                troublemakers.append((id, e))
-                if PCT_FILL_ANALYSIS:
-                    pct_fill_df.loc[len(pct_fill_df)] = [id, (e, params), times]
-
-        pbar.update(1)
-
-if len(troublemakers) > 0:
-    with open('troublemakers.txt', 'w') as file:
-        for item in troublemakers:
-            file.write(f'{str(item)}\n')
-
-if PCT_FILL_ANALYSIS:
-    pct_fill_df.to_csv('pct_fill_data.csv', index=False)
-
-if DRAW_PARAMETERS_HISTOGRAMS:
-    histogram_lists = [icp, abp, amp, hr, prx, psi]
-    for i in range(len(histogram_lists)):
-        data = histogram_lists[i]
-        plt.hist(data)
-        plt.savefig(f'{i}_histogram.png')
-        plt.close()
-
-    histogram_list_max_len = max(len(icp), len(abp), len(amp), len(hr), len(prx), len(psi))
-    for item in [icp, abp, amp, hr, prx, psi]:
-        while len(item) < histogram_list_max_len:
-            item.append(np.NaN)
-
-    data_dict = {'ICP': icp,
-                 'ABP': abp,
-                 'AMP': amp,
-                 'HR': hr,
-                 'PRx': prx,
-                 'PSI': psi}
-    histogram_data_df = pd.DataFrame(data_dict)
-    histogram_data_df.to_csv('histogram_data.csv', index=False)
-
-    # - Wykresy w edytowalnej formie, albo w większym formacie
+def create_and_return_directory(base_dir, *subdirs):
+    directory = os.path.join(base_dir, *subdirs)
+    os.makedirs(directory, exist_ok=True)
+    return directory
