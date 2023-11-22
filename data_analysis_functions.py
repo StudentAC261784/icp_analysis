@@ -2,6 +2,8 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from itertools import chain
 
 # ICP:
 # 1/ any_error_flag == True, jeżeli: kraniektomia albo procent artefaktów w slicie > 80% albo średnie ICP w slicie < 0 albo procent wartości nieprawidłowych (-99999) w slicie > 10%
@@ -239,3 +241,79 @@ def create_and_return_directory(base_dir, *subdirs):
     directory = os.path.join(base_dir, *subdirs)
     os.makedirs(directory, exist_ok=True)
     return directory
+
+def match_boxplots_ylims(bad_data, good_data):
+    bad_data_new = []
+    for bad_list in bad_data:
+        for item in bad_list:
+            if not np.isnan(item):
+                bad_data_new.append(item)
+
+    good_data_new = []
+    for good_list in good_data:
+        for item in good_list:
+            if not np.isnan(item):
+                good_data_new.append(item)   
+
+    max1 = max(bad_data_new)
+    max2 = max(good_data_new)
+
+    min1 = min(bad_data_new)
+    min2 = min(good_data_new)
+
+    min_y = min([min1, min2])
+    max_y = max([max1, max2])
+
+    return min_y, max_y
+
+def draw_box_plots(signals_names, box_data_bad_8h, box_data_good_8h, box_data_bad_24h, box_data_good_24h, BOX_PLOTS_THRESHOLD):
+    box_file_names = ['_boxplot_bad_8h.png', '_boxplot_good_8h.png', '_boxplot_bad_24h.png', '_boxplot_good_24h.png']
+
+    for i in range(len(signals_names)):
+        # Wyznaczanie wspólnej skali osi Y dla boxplotów dobrych i złych wyników leczenia w tym samym oknie
+        min_y_8h, max_y_8h = match_boxplots_ylims(box_data_bad_8h[i], box_data_good_8h[i])
+        min_y_24h, max_y_24h = match_boxplots_ylims(box_data_bad_24h[i], box_data_good_24h[i])
+
+        for index, box_data in enumerate([box_data_bad_8h, box_data_good_8h, box_data_bad_24h, box_data_good_24h]):
+
+            max_length = max(len(sublist) for sublist in box_data[i])
+
+            if BOX_PLOTS_THRESHOLD:
+                # Próg wypełnienia danymi
+                percentage_threshold = 10
+                min_length = max_length * percentage_threshold // 100
+
+                # Filtrowanie elementów, które nie przekraczają progu wypełnienia danymi
+                data = [sublist for sublist in box_data[i] if len(sublist) >= min_length]
+            else:
+                data = box_data[i]
+            
+            # Sprowadzanie list do tej samej długości
+            same_length_data = [sublist + [None] * (max_length - len(sublist)) for sublist in data]
+            # Tworzenie DataFrame
+            df = pd.DataFrame(same_length_data)
+            df = df.T
+            df.to_csv(f'{signals_names[i]}{box_file_names[index]}.csv', index=False)
+            
+            boxplot = df.boxplot()
+            if "8h" in box_file_names[index]:
+                min_y = min_y_8h
+                max_y = max_y_8h
+
+                x_ticks = plt.xticks()[0]
+                x_labels = [str(int(tick)) for tick in x_ticks if int(tick) % 3 == 0]
+                plt.xticks(x_ticks[x_ticks % 3 == 0], x_labels, rotation=45)
+            else:
+                min_y = min_y_24h
+                max_y = max_y_24h
+                plt.xticks(rotation=45)
+
+            plt.ylim(min_y, max_y)
+
+            file_path = rf'outputs/boxplots/{signals_names[i]}{box_file_names[index]}'
+
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            plt.savefig(file_path)
+            plt.close()
