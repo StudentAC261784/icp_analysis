@@ -1,9 +1,11 @@
 import os
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 from itertools import chain
+from datetime import date
 
 # ICP:
 # 1/ any_error_flag == True, jeżeli: kraniektomia albo procent artefaktów w slicie > 80% albo średnie ICP w slicie < 0 albo procent wartości nieprawidłowych (-99999) w slicie > 10%
@@ -25,22 +27,27 @@ from itertools import chain
 # Dodatkowo: jeśli kiedykolwiek fs == 0: pomija się slice
 
 def get_full_data(slices):
-    # max_time = 7 * 24 * 60 * 60
     valid_t, valid_signal = [], []
+    
     for ids, slice in enumerate(slices):
         if not slice['any_error_flag']:
             t0 = slice['time_start']
             fs = slice['fs']
             signal = slice['signal']
-            # Dopisano konwersję na listę w przypadku, gdy slice był obiektem np.Float64 (jednoelementowy slice nie był listą)
+
+            # Convert signal to a 1D NumPy array
             if isinstance(signal, np.float64):
-                signal = [signal]
-            # Dopisano warunek sprawdzający, czy przypadkiem nie zachodzi dzielenie przez 0 (tak było w próbce A)
-            if signal is not None and len(signal) > 0 and not np.all(np.isnan(signal)) and fs != 0:
+                signal = np.array([signal])
+            elif isinstance(signal, list):
+                signal = np.array(signal)
+
+            # Check if signal is not None, not all NaN, and fs is not 0
+            if signal is not None and signal.size > 0 and not np.all(np.isnan(signal)) and fs != 0:
                 n = len(signal)
                 tline = np.linspace(t0, t0 + n * 1 / fs, n)
+
                 valid_t.extend(tline)
-                valid_signal.extend(signal)
+                valid_signal.extend(signal.tolist())
 
     valid_t = np.asarray(valid_t)
     valid_signal = np.asarray(valid_signal)
@@ -102,218 +109,103 @@ def introduce_data_gaps(times, params):
 
     return times, params
 
-def plot_params(times, params, x_axis_seconds_to_hours=False):
-    fig, axes = plt.subplots(6, 1, sharex=True)
-    titles = ['ICP', 'ABP', 'AMP', 'HR', 'PRx', 'PSI']
-    plt.subplots_adjust(hspace=0.5)  # Odstępy na tytuły między wykresami
+def plot_params(times, params, titles, units, window_size, output_dirs):
+    fig, axes = plt.subplots(6, 1, figsize=(8, 12), sharex=True)
+
+    plt.subplots_adjust(hspace=0.75)  # Odstępy na tytuły między wykresami
 
     for i in range(len(times)):
-        if x_axis_seconds_to_hours:
-            times[i] = [x / 60 / 60 for x in times[i]]
-        axes[i].plot(times[i], params[i])
+        axes[i].plot(times[i], params[i], marker='o')
         axes[i].set_title(titles[i])
+        axes[i].set_ylabel(units[i])
+        axes[i].grid(True, linestyle='--', alpha=0.6)
+        axes[i].set_xlabel(f'Indeks okna {window_size}h')
+        axes[i].xaxis.set_tick_params(labelbottom=True)
+        axes[i].xaxis.set_major_locator(MaxNLocator(integer=True))
+    
+    plt.tight_layout()
+    for output_dir in output_dirs:
+        plt.savefig(output_dir)
+    plt.close()
 
-    return (fig, axes)
-
-def sample_window(times, params, size_hours, threshold_pct):
+def sample_window(times, params, size_hours, threshold_pct, calculate_fill_value=False):
     size_seconds = int(size_hours * 60 * 60)
 
     # Przygotowanie list o odpowiedniej długości
-    param_avgs = []
-    param_avgs_window_indexes = []
-    stop_flags = []
-    for i in range(len(times)):
-        param_avgs.append([])
-        param_avgs_window_indexes.append([])
-        stop_flags.append([])
+    param_avgs = [[] for _ in range(len(times))]
+    param_avgs_window_indexes = [[] for _ in range(len(times))]
+    fill_values = [[] for _ in range(len(times))]
+    stop_flags = [0 for _ in range(len(times))]
 
     # Główna pętla
     n = 1
     index_limit = 0
     while True:
         current_time_limit = n * size_seconds  # Prawa granica okna
-        previous_time_limit = (n-1) * size_seconds  # Lewa granica okna
+        previous_time_limit = (n - 1) * size_seconds  # Lewa granica okna
 
         for i in range(len(times)):
             j = 1
-            while times[i][j] - times[i][j-1] == 0 or times[i][j] == np.NaN or times[i][j-1] == np.NaN:
+            while times[i][j] - times[i][j - 1] == 0 or np.isnan(times[i][j]) or np.isnan(times[i][j - 1]):
                 j += 1
 
-            max_count_of_samples_in_window = int(
-                size_seconds / (times[i][j] - times[i][j-1]))
-            index_limit = binary_search_nearest(
-                times[i], current_time_limit)[1]
-            previous_index_limit = binary_search_nearest(
-                times[i], previous_time_limit)[1]
+            max_count_of_samples_in_window = int(size_seconds / (times[i][j] - times[i][j - 1]))
+            index_limit = binary_search_nearest(times[i], current_time_limit)[1]
+            previous_index_limit = binary_search_nearest(times[i], previous_time_limit)[1]
 
             # Sprawdzanie, czy nie została przekroczona długość listy
             if previous_index_limit != -1:
                 # Wycinek listy parametrów ograniczony odpowiednimi granicami
                 params_index_limit_cutout = params[i][previous_index_limit: index_limit + 1]
-                params_index_limit_cutout = np.array(params_index_limit_cutout)[
-                    ~np.isnan(params_index_limit_cutout)].tolist()
+                params_index_limit_cutout = np.array(params_index_limit_cutout)[~np.isnan(params_index_limit_cutout)].tolist()
                 # Sprawdzanie przekroczenia warunku minimalnego wypełnienia okna
                 if len(params_index_limit_cutout) >= round(max_count_of_samples_in_window * (threshold_pct / 100)):
-                    avg = np.average(params_index_limit_cutout)
+                    avg = np.nanmean(params_index_limit_cutout)
                     param_avgs[i].append(avg)
                 else:
                     param_avgs[i].append(np.nan)
 
-                param_avgs_window_indexes[i].append(n)
+                if calculate_fill_value:
+                    fill_value = len(params_index_limit_cutout) / max_count_of_samples_in_window
+                    fill_values[i].append(fill_value)
+
+                param_avgs_window_indexes[i].append(n - 1)
             else:
                 stop_flags[i] = [1]
 
-        if stop_flags.count([1]) == len(times):
+        if all(stop_flag == [1] for stop_flag in stop_flags):
             break
         n += 1
 
-    return (param_avgs, param_avgs_window_indexes)
+    return (
+        np.array(param_avgs),
+        np.array(param_avgs_window_indexes),
+        fill_values
+    )
 
-def sample_window_return_fill_value(times, params, size_hours, threshold_pct):
-    size_seconds = int(size_hours * 60 * 60)
 
-    # Przygotowanie list o odpowiedniej długości
-    param_avgs = []
-    param_avgs_window_indexes = []
-    fill_values = [[], [], [], [], [], []]
-    stop_flags = []
-    for i in range(len(times)):
-        param_avgs.append([])
-        param_avgs_window_indexes.append([])
-        stop_flags.append([])
-
-    # Główna pętla
-    n = 1
-    index_limit = 0
-    while True:
-        current_time_limit = n * size_seconds  # Prawa granica okna
-        previous_time_limit = (n-1) * size_seconds  # Lewa granica okna
-
-        for i in range(len(times)):
-            j = 1
-            while times[i][j] - times[i][j-1] == 0 or times[i][j] == np.NaN or times[i][j-1] == np.NaN:
-                j += 1
-
-            max_count_of_samples_in_window = int(
-                size_seconds / (times[i][j] - times[i][j-1]))
-            index_limit = binary_search_nearest(
-                times[i], current_time_limit)[1]
-            previous_index_limit = binary_search_nearest(
-                times[i], previous_time_limit)[1]
-
-            # Sprawdzanie, czy nie została przekroczona długość listy
-            if previous_index_limit != -1:
-                # Wycinek listy parametrów ograniczony odpowiednimi granicami
-                params_index_limit_cutout = params[i][previous_index_limit: index_limit + 1]
-                params_index_limit_cutout = np.array(params_index_limit_cutout)[
-                    ~np.isnan(params_index_limit_cutout)].tolist()
-
-                fill_value = len(params_index_limit_cutout) / \
-                    max_count_of_samples_in_window
-
-                # Sprawdzanie przekroczenia warunku minimalnego wypełnienia okna
-                if len(params_index_limit_cutout) >= round(max_count_of_samples_in_window * (threshold_pct / 100)):
-                    avg = np.average(params_index_limit_cutout)
-                    param_avgs[i].append(avg)
-                else:
-                    param_avgs[i].append(np.nan)
-
-                param_avgs_window_indexes[i].append(n)
-                fill_values[i].append(fill_value)
-            else:
-                stop_flags[i] = [1]
-
-        if stop_flags.count([1]) == len(times):
-            break
-        n += 1
-
-    return (param_avgs, param_avgs_window_indexes, fill_values)
-
-def append_histogram_lists(icp, abp, amp, hr, prx, psi, params):
-    histogram_lists = [icp, abp, amp, hr, prx, psi]
-    for id, list in enumerate(params):
-        if len(list) > 7:
-            list = list[:7]
-        histogram_lists[id] = histogram_lists[id] + list
-    return histogram_lists[0], histogram_lists[1], histogram_lists[2], histogram_lists[3], histogram_lists[4], histogram_lists[5]
+def append_histogram_arrays(histogram_lists, params):
+    for id, array in enumerate(params):
+        histogram_lists[id] = np.concatenate([histogram_lists[id], array])
+    return histogram_lists
 
 def create_and_return_directory(base_dir, *subdirs):
     directory = os.path.join(base_dir, *subdirs)
     os.makedirs(directory, exist_ok=True)
     return directory
 
-def match_boxplots_ylims(bad_data, good_data):
-    bad_data_new = []
-    for bad_list in bad_data:
-        for item in bad_list:
-            if not np.isnan(item):
-                bad_data_new.append(item)
+def create_graphs_directories(script_functionality, window_size):
+    today_date = str(date.today())
+    base_dir = os.path.join(os.getcwd(), 'outputs', 'plots', today_date)
 
-    good_data_new = []
-    for good_list in good_data:
-        for item in good_list:
-            if not np.isnan(item):
-                good_data_new.append(item)   
+    output_directory = create_and_return_directory(base_dir, f'{window_size}h')
 
-    max1 = max(bad_data_new)
-    max2 = max(good_data_new)
+    if script_functionality['split_drawn_graphs_by_outcome']:
+        # Tworzenie odpowiednich folderów na wykresy w zależności od okna, wyniku leczenia
+        output_directory_good = create_and_return_directory(base_dir, f'{window_size}h', 'good')
+        output_directory_poor = create_and_return_directory(base_dir, f'{window_size}h', 'poor')
+        output_directory_none = create_and_return_directory(base_dir, f'{window_size}h', 'none')
 
-    min1 = min(bad_data_new)
-    min2 = min(good_data_new)
-
-    min_y = min([min1, min2])
-    max_y = max([max1, max2])
-
-    return min_y, max_y
-
-def draw_box_plots(signals_names, box_data_bad_8h, box_data_good_8h, box_data_bad_24h, box_data_good_24h, BOX_PLOTS_THRESHOLD):
-    box_file_names = ['_boxplot_bad_8h.png', '_boxplot_good_8h.png', '_boxplot_bad_24h.png', '_boxplot_good_24h.png']
-
-    for i in range(len(signals_names)):
-        # Wyznaczanie wspólnej skali osi Y dla boxplotów dobrych i złych wyników leczenia w tym samym oknie
-        min_y_8h, max_y_8h = match_boxplots_ylims(box_data_bad_8h[i], box_data_good_8h[i])
-        min_y_24h, max_y_24h = match_boxplots_ylims(box_data_bad_24h[i], box_data_good_24h[i])
-
-        for index, box_data in enumerate([box_data_bad_8h, box_data_good_8h, box_data_bad_24h, box_data_good_24h]):
-
-            max_length = max(len(sublist) for sublist in box_data[i])
-
-            if BOX_PLOTS_THRESHOLD:
-                # Próg wypełnienia danymi
-                percentage_threshold = 10
-                min_length = max_length * percentage_threshold // 100
-
-                # Filtrowanie elementów, które nie przekraczają progu wypełnienia danymi
-                data = [sublist for sublist in box_data[i] if len(sublist) >= min_length]
-            else:
-                data = box_data[i]
-            
-            # Sprowadzanie list do tej samej długości
-            same_length_data = [sublist + [None] * (max_length - len(sublist)) for sublist in data]
-            # Tworzenie DataFrame
-            df = pd.DataFrame(same_length_data)
-            df = df.T
-            df.to_csv(f'{signals_names[i]}{box_file_names[index]}.csv', index=False)
-            
-            boxplot = df.boxplot()
-            if "8h" in box_file_names[index]:
-                min_y = min_y_8h
-                max_y = max_y_8h
-
-                x_ticks = plt.xticks()[0]
-                x_labels = [str(int(tick)) for tick in x_ticks if int(tick) % 3 == 0]
-                plt.xticks(x_ticks[x_ticks % 3 == 0], x_labels, rotation=45)
-            else:
-                min_y = min_y_24h
-                max_y = max_y_24h
-                plt.xticks(rotation=45)
-
-            plt.ylim(min_y, max_y)
-
-            file_path = rf'outputs/boxplots/{signals_names[i]}{box_file_names[index]}'
-
-            if os.path.exists(file_path):
-                os.remove(file_path)
-
-            plt.savefig(file_path)
-            plt.close()
+        return (output_directory, output_directory_good, output_directory_poor, output_directory_none)
+    
+    return (output_directory)
