@@ -170,6 +170,8 @@ def perform_analysis(script_functionality, signals_info, box_plots_limits, addit
         patient_id_gose_outcome_dict = dict(zip([x.lower() for x in gose_outcome_df['Patient'].values.tolist()], gose_outcome_df['Gose3m'].fillna('').values.tolist()))
 
     for window_index, window in enumerate(windows_info):
+        good_count, poor_count = [0, 0]
+
         if script_functionality['draw_parameter_histograms']:
             # np.arrays z danymi do histogramów
             histogram_params_arrays = [np.array([]) for _ in range(len(signals_info['names']))]
@@ -196,7 +198,13 @@ def perform_analysis(script_functionality, signals_info, box_plots_limits, addit
         with tqdm(total=len(sheet_names), desc=f"Analyzing data for window {window['size']}h.' {window_index + 1}/{len(windows_info)}", unit="patient") as pbar:
             for patient_id in sheet_names:
                 try:
-                    if patient_id not in additional_exclude_list:
+                    if patient_id.lower() not in additional_exclude_list:
+                        patient_gose_score = patient_id_gose_outcome_dict.get(patient_id.lower(), '')
+                        if patient_gose_score != '':
+                            if patient_gose_score < 5:
+                                poor_count += 1
+                            else:
+                                good_count += 1
                         current_sheet_data = pd.read_excel(source_excel, patient_id)
 
                         num_columns = current_sheet_data.shape[1]
@@ -319,6 +327,7 @@ def perform_analysis(script_functionality, signals_info, box_plots_limits, addit
                                     plt.savefig(file_path)
                                 plt.close()
         print('done')
+        print(poor_count, good_count)
 
         if len(troublemakers) > 0:
             print(f'WARNING: Some patients have caused errors. Check troublemakers_analysis_{window["size"]}h.txt for more details.')

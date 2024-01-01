@@ -9,26 +9,41 @@ def calculate_median_differences(output_file_name, window_ranges_dict, window_si
     done_files = []
     for filename in os.listdir(rf'{os.getcwd()}\data\parameter_values_data'):
         if filename not in done_files:
-            filename_bad = filename.replace('good', 'poor')
+            filename_poor = filename.replace('good', 'poor')
             done_files.append(filename)
-            done_files.append(filename_bad)
+            done_files.append(filename_poor)
             filepath = f'{os.getcwd()}\data\parameter_values_data\{filename}'
-            filepath_bad = f'{os.getcwd()}\data\parameter_values_data\{filename_bad}'
+            filepath_poor = f'{os.getcwd()}\data\parameter_values_data\{filename_poor}'
 
             param, outcome, window_size = filename.replace('.csv', '').split('_')
             if window_size in window_sizes_to_analyze:
                 df_good = pd.read_csv(filepath)
-                df_bad = pd.read_csv(filepath_bad)
+                df_poor = pd.read_csv(filepath_poor)
                 window_range = window_ranges_dict[window_size]
                 df_good = df_good.iloc[:, window_range] # tylko okna o odpowiednich indeksach
-                df_bad = df_bad.iloc[:, window_range]
-                
-                median_df = pd.concat([df_bad.median(), df_good.median()], axis=1)
-                median_df.columns = ['median_bad', 'median_good']
-                median_df.insert(0, 'window_index', window_range)
-                median_df.insert(3, 'median_bad - median_good', median_df['median_bad'] - median_df['median_good'])
+                df_poor = df_poor.iloc[:, window_range]
 
-                median_df.to_excel(excel_writer, sheet_name=f'{param}_{window_size}', index=False)
+                median_good = df_good.median(axis=0)
+                median_poor = df_poor.median(axis=0)
+
+                q1_good = df_good.quantile(0.25, axis=0)
+                q3_good = df_good.quantile(0.75, axis=0)
+
+                q1_poor = df_poor.quantile(0.25, axis=0)
+                q3_poor = df_poor.quantile(0.75, axis=0)
+                
+                results_df = pd.DataFrame({
+                    'window_index': window_range,
+                    'median_good': median_good,
+                    'median_poor': median_poor,
+                    'median_diff': abs(median_poor - median_good),
+                    'q1_good': q1_good,
+                    'q3_good': q3_good,
+                    'q1_poor': q1_poor,
+                    'q3_poor': q3_poor,
+                })
+
+                results_df.to_excel(excel_writer, sheet_name=f'{param}_{window_size}', index=False)
 
     excel_writer.save()
 
@@ -119,15 +134,14 @@ def perfmorm_two_way_anova_test(output_file_name, window_ranges_dict, window_siz
                 results_df.to_excel(excel_writer, sheet_name=f'{param}_{window_size}', index=False)
     excel_writer.save()
 
-
 if __name__ == '__main__':
     # Słownik limitów indeksów okien
     window_ranges_dict = {
-        "8h" : range(3, 24),
+        "8h" : range(3, 12), #range(3, 24)
         "24h" : range(1, 8)
     }
 
-    perform_shapiro_test('shapiro_results.xlsx', window_ranges_dict, ["8h", "24h"])
-    # calculate_median_differences('median_results.xlsx', window_ranges_dict, ["8h", "24h"])
-    perform_mann_whitney_test('mann_whitney_results.xlsx', window_ranges_dict, ["24h"])
-    perfmorm_two_way_anova_test('anova_results.xlsx', window_ranges_dict, ["24h"])
+    #perform_shapiro_test('shapiro_results.xlsx', window_ranges_dict, ["8h", "24h"])
+    #calculate_median_differences('median_results.xlsx', window_ranges_dict, ["24h"])
+    perform_mann_whitney_test('mann_whitney_results.xlsx', window_ranges_dict, ["8h"])
+    #perfmorm_two_way_anova_test('anova_results.xlsx', window_ranges_dict, ["24h"])
